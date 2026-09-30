@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import uuid
 import time
 import zipfile
@@ -58,16 +59,48 @@ os.makedirs(MEDIA_DIR, exist_ok=True)
 
 app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
 
-db = {
-    "workspaces": [
-        {"id": "ws-default", "name": "기본 작업대 (바이럴 쇼츠)", "min_views": 4000000, "max_duration": 40}
-    ],
-    "channel_blacklists": set(),
-    "collected_videos": {},
-    "tasks": {},
-    "generated_scripts": {},
-    "long_to_shorts": {}
-}
+STATE_FILE = DATA_DIR / "state.json"
+
+def _default_db() -> dict:
+    return {
+        "workspaces": [
+            {"id": "ws-default", "name": "기본 작업대 (바이럴 쇼츠)", "min_views": 4000000, "max_duration": 40}
+        ],
+        "channel_blacklists": set(),
+        "collected_videos": {},
+        "tasks": {},
+        "generated_scripts": {},
+        "long_to_shorts": {}
+    }
+
+def _load_db() -> dict:
+    state = _default_db()
+    try:
+        if STATE_FILE.exists():
+            saved = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            for key in state:
+                if key in saved:
+                    state[key] = saved[key]
+            state["channel_blacklists"] = set(saved.get("channel_blacklists") or [])
+            for task in state["tasks"].values():
+                if task.get("status") in ("QUEUED", "RUNNING"):
+                    task["status"] = "COMPLETED"
+                    task["progress"] = 100
+                    task["message"] = "서버 재시작으로 중단된 작업입니다."
+    except Exception as e:
+        print(f"[state] failed to load {STATE_FILE}: {e}")
+    return state
+
+def save_state():
+    try:
+        payload = {**db, "channel_blacklists": list(db["channel_blacklists"])}
+        tmp = STATE_FILE.with_name("state.json.tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(STATE_FILE)
+    except Exception as e:
+        print(f"[state] failed to save: {e}")
+
+db = _load_db()
 
 # --- Pydantic Models ---
 class ChannelCollectRequest(BaseModel):
@@ -134,6 +167,7 @@ def create_workspace(req: CreateWorkspaceRequest):
         "max_duration": req.max_duration
     }
     db["workspaces"].append(ws)
+    save_state()
     return ws
 
 @app.get("/api/styles")
@@ -195,6 +229,7 @@ def run_collection_task(task_id: str, req: ChannelCollectRequest):
         progress = int(5 + (idx + 1) / max(len(valid_channels), 1) * 55)
         db["tasks"][task_id]["progress"] = progress
         db["tasks"][task_id]["message"] = f"채널 해체 중 ({idx+1}/{len(valid_channels)})... 누적 총알 {total_found}개"
+        save_state()
 
     # 2. Multi-lingual Keyword Cross Search
     if req.enable_keyword_cross_search and (req.keyword or req.selected_tags):
@@ -270,6 +305,7 @@ def run_collection_task(task_id: str, req: ChannelCollectRequest):
     db["tasks"][task_id]["status"] = "COMPLETED"
     db["tasks"][task_id]["progress"] = 100
     db["tasks"][task_id]["message"] = f"총 {total_found}개의 바이럴 쇼츠 총알 발굴이 완료되었습니다!"
+    save_state()
 
 @app.post("/api/dissector/collect")
 def collect_channel_shorts(req: ChannelCollectRequest, bg_tasks: BackgroundTasks):
@@ -281,6 +317,7 @@ def collect_channel_shorts(req: ChannelCollectRequest, bg_tasks: BackgroundTasks
         "message": "채널 해체 및 다국어 수집 큐에 등록되었습니다."
     }
     bg_tasks.add_task(run_collection_task, task_id, req)
+    save_state()
     return {"task_id": task_id}
 
 # ② 작업 현황 (Task Dashboard)
@@ -308,12 +345,14 @@ def update_candidate_status(video_id: str, req: StatusUpdateRequest):
     if video_id not in db["collected_videos"]:
         raise HTTPException(status_code=404, detail="Video not found")
     db["collected_videos"][video_id]["status"] = req.status
+    save_state()
     return {"video_id": video_id, "status": req.status}
 
 @app.delete("/api/candidates/{video_id}")
 def delete_candidate(video_id: str):
     if video_id in db["collected_videos"]:
         del db["collected_videos"][video_id]
+        save_state()
         return {"status": "deleted", "video_id": video_id}
     raise HTTPException(status_code=404, detail="Video not found")
 
@@ -325,6 +364,7 @@ def blacklist_channel(req: BlacklistRequest):
         if v["channel_id"] == req.channel_id:
             v["status"] = "EXCLUDED"
             affected += 1
+    save_state()
     return {"channel_id": req.channel_id, "excluded_count": affected}
 
 # ④ & ⑤ 원테이크 (One-Take AI 대본 + Edge-TTS + 스타일 프리셋)
@@ -363,6 +403,7 @@ async def generate_onetake(req: OneTakeRequest):
         "style_preset": req.template_style,
         "top_header_text": req.top_header_text
     }
+    save_state()
 
     return db["generated_scripts"][req.video_id]
 
@@ -381,6 +422,7 @@ def extract_long_to_shorts(req: LongToShortsRequest):
         highlight_count=req.highlight_count
     )
     db["long_to_shorts"][req.video_url] = result
+    save_state()
     return result
 
 # ⑦ 멀티유즈 메타데이터
