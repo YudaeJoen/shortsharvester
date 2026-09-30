@@ -41,27 +41,9 @@ def generate_fallback_jab_script(video_title: str, top_comments: List[str]) -> D
         ]
     }
 
-def generate_jab_script(
-    video_title: str,
-    top_comments: List[str],
-    api_key: Optional[str] = None
-) -> Dict[str, Any]:
-    """
-    Generate 3-step viral jab script and 3 hooking title candidates using Google Gemini or fallback.
-    """
-    gemini_key = api_key or os.environ.get("GEMINI_API_KEY")
-    if not gemini_key:
-        logger.info("GEMINI_API_KEY not found. Using structured template generator.")
-        return generate_fallback_jab_script(video_title, top_comments)
-
-    try:
-        from google import genai
-        from google.genai import types
-
-        client = genai.Client(api_key=gemini_key)
-        comments_formatted = "\n".join(f"- {c}" for c in top_comments[:15])
-
-        prompt = f"""
+def _build_jab_prompt(video_title: str, top_comments: List[str]) -> str:
+    comments_formatted = "\n".join(f"- {c}" for c in top_comments[:15])
+    return f"""
 당신은 1000만 조회수를 만드는 숏폼 바이럴 전문 디렉터입니다.
 아래 영상 제목과 시청자들의 공감 베스트 댓글을 기반으로,
 시청자의 이탈을 막고 참여를 유도하는 3단계 '잽(Jab)' 대본과 후킹 제목 3종을 작성하세요.
@@ -77,7 +59,44 @@ def generate_jab_script(
    - SITUATION (2단계): 댓글 반응과 영상 상황을 위트 있게 요약하는 본론 (10초 내외).
    - PUNCHLINE (3단계): 반전 마무리 및 시청자의 댓글 작성을 유도하는 엔딩 (4초 내외).
 3. 텍스트는 TTS로 읽었을 때 자연스러운 구어체로 작성할 것.
+4. 반드시 아래 JSON 규격으로만 응답하세요 (그 외 텍스트 금지):
+{{"hook_titles": ["제목1", "제목2", "제목3"], "script_segments": [{{"step": "HOOK", "text": "...", "est_duration": 3.0}}, {{"step": "SITUATION", "text": "...", "est_duration": 8.0}}, {{"step": "PUNCHLINE", "text": "...", "est_duration": 4.0}}]}}
 """
+
+
+def _finalize_jab_data(res_data: Dict[str, Any]) -> Dict[str, Any]:
+    for seg in res_data.get("script_segments", []):
+        dur = seg.get("est_duration", 4.0)
+        seg["est_duration_us"] = int(dur * 1_000_000)
+    return res_data
+
+
+def generate_jab_script(
+    video_title: str,
+    top_comments: List[str],
+    api_key: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Generate 3-step viral jab script and 3 hooking title candidates.
+    Provider order: OpenAI-compatible LLM (LLM_BASE_URL) -> Google Gemini -> template fallback.
+    """
+    prompt = _build_jab_prompt(video_title, top_comments)
+
+    from services.ai_pipeline.llm_client import chat_json
+    llm_data = chat_json(prompt)
+    if isinstance(llm_data, dict) and llm_data.get("hook_titles") and llm_data.get("script_segments"):
+        return _finalize_jab_data(llm_data)
+
+    gemini_key = api_key or os.environ.get("GEMINI_API_KEY")
+    if not gemini_key:
+        logger.info("No LLM endpoint or GEMINI_API_KEY. Using structured template generator.")
+        return generate_fallback_jab_script(video_title, top_comments)
+
+    try:
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(api_key=gemini_key)
         response = client.models.generate_content(
             model='gemini-2.5-flash',
             contents=prompt,
@@ -104,11 +123,7 @@ def generate_jab_script(
                 }
             )
         )
-        res_data = json.loads(response.text)
-        for seg in res_data.get("script_segments", []):
-            dur = seg.get("est_duration", 4.0)
-            seg["est_duration_us"] = int(dur * 1_000_000)
-        return res_data
+        return _finalize_jab_data(json.loads(response.text))
     except Exception as e:
         logger.error(f"Gemini generation error: {e}. Falling back to template.")
         return generate_fallback_jab_script(video_title, top_comments)
