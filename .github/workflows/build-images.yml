@@ -25,7 +25,7 @@ jobs:
           context: .
           file: Dockerfile
           push: true
-          tags: ghcr.io/${{ github.repository_owner | lowercase }}/shortsharvester-backend:latest
+          tags: ghcr.io/${{ github.repository }}/shortsharvester-backend:latest
 
   frontend:
     runs-on: ubuntu-latest
@@ -42,4 +42,4 @@ jobs:
           context: ./apps/web
           file: Dockerfile
           push: true
-          tags: ghcr.io/${{ github.repository_owner | lowercase }}/shortsharvester-frontend:latest
+          tags: ghcr.io/${{ github.repository }}/shortsharvester-frontend:latest
