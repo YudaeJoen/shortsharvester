@@ -40,6 +40,6 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: ./apps/web
-          file: Dockerfile
+          file: ./apps/web/Dockerfile
           push: true
           tags: ghcr.io/yudaejoen/shortsharvester-frontend:latest
