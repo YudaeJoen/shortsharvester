@@ -5,7 +5,6 @@ import {
   CheckCircle2, 
   Sparkles, 
   Cpu, 
-  Settings, 
   Search, 
   Play, 
   Pause,
@@ -17,7 +16,6 @@ import {
   RefreshCw,
   Sliders,
   Volume2,
-  FileCheck,
   Zap,
   Radio,
   Scissors,
@@ -25,29 +23,45 @@ import {
   Copy,
   Check,
   Palette,
-  LayoutTemplate
+  Globe,
+  Plus,
+  ArrowRight,
+  Filter,
+  CheckSquare,
+  Square
 } from 'lucide-react';
 import { api } from './api';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('candidates'); // dissector, tasks, candidates, onetake, long2shorts, multiuse, settings
+  const [activeTab, setActiveTab] = useState('dissector'); // dissector, tasks, candidates, onetake, long2shorts, multiuse, settings
   const [agentStatus, setAgentStatus] = useState({ online: false, draft_dir: '' });
   const [apiOnline, setApiOnline] = useState(false);
 
   // Workspaces
   const [workspaces, setWorkspaces] = useState([
-    { id: 'ws-default', name: '바이럴 쇼츠 연구실', min_views: 4000000, max_duration: 40 }
+    { id: 'ws-default', name: '기본 작업대 (바이럴 쇼츠)', min_views: 4000000, max_duration: 40 }
   ]);
   const [currentWs, setCurrentWs] = useState('ws-default');
+  const [newWsName, setNewWsName] = useState('');
+  const [showWsModal, setShowWsModal] = useState(false);
 
-  // Channel Dissector State
+  // Channel Dissector State (Enhanced)
   const [channelUrls, setChannelUrls] = useState([
     'https://www.youtube.com/@MRBEAST',
     'https://www.youtube.com/@ZachChoi'
   ]);
-  const [subKeyword, setSubKeyword] = useState('반전 레전드');
+  const [channelProfiles, setChannelProfiles] = useState({});
+  const [isAnalyzingChannel, setIsAnalyzingChannel] = useState(false);
+
+  const [subKeyword, setSubKeyword] = useState('강아지 레전드');
+  const [expandedTags, setExpandedTags] = useState([]);
+  const [selectedTagNames, setSelectedTagNames] = useState([]);
+  const [isExpandingTags, setIsExpandingTags] = useState(false);
+
   const [minViews, setMinViews] = useState(4000000);
   const [maxDuration, setMaxDuration] = useState(40);
+  const [sortBy, setSortBy] = useState('views');
+  const [enableKeywordSearch, setEnableKeywordSearch] = useState(true);
   const [isCollecting, setIsCollecting] = useState(false);
 
   // Candidates State
@@ -91,6 +105,9 @@ export default function App() {
   // 1. Initial Health & Status Polling
   useEffect(() => {
     checkConnections();
+    loadWorkspaces();
+    loadCandidates();
+    loadTasks();
     const interval = setInterval(checkConnections, 4000);
     return () => clearInterval(interval);
   }, []);
@@ -104,6 +121,28 @@ export default function App() {
       setAgentStatus({ online: true, draft_dir: agRes.draft_dir });
     } else {
       setAgentStatus({ online: false, draft_dir: '' });
+    }
+  };
+
+  const loadWorkspaces = async () => {
+    try {
+      const list = await api.getWorkspaces();
+      if (list && list.length > 0) setWorkspaces(list);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleCreateWorkspace = async () => {
+    if (!newWsName.trim()) return;
+    try {
+      const created = await api.createWorkspace(newWsName.trim(), minViews, maxDuration);
+      setWorkspaces([...workspaces, created]);
+      setCurrentWs(created.id);
+      setNewWsName('');
+      setShowWsModal(false);
+    } catch (e) {
+      alert("작업대 생성 실패");
     }
   };
 
@@ -136,7 +175,46 @@ export default function App() {
     }
   };
 
-  // Actions
+  // Channel Dissector Actions
+  const handleAnalyzeChannels = async () => {
+    setIsAnalyzingChannel(true);
+    const profiles = { ...channelProfiles };
+    for (const url of channelUrls) {
+      if (url.trim()) {
+        try {
+          const res = await api.analyzeChannel(url.trim());
+          profiles[url.trim()] = res;
+        } catch {}
+      }
+    }
+    setChannelProfiles(profiles);
+    setIsAnalyzingChannel(false);
+  };
+
+  const handleExpandKeywords = async () => {
+    if (!subKeyword.trim()) return;
+    setIsExpandingTags(true);
+    try {
+      const res = await api.expandTags(subKeyword.trim());
+      if (res && res.tags) {
+        setExpandedTags(res.tags);
+        setSelectedTagNames(res.tags.map(t => t.tag));
+      }
+    } catch (e) {
+      alert("키워드 확장 중 오류 발생");
+    } finally {
+      setIsExpandingTags(false);
+    }
+  };
+
+  const toggleTagSelection = (tagName) => {
+    if (selectedTagNames.includes(tagName)) {
+      setSelectedTagNames(selectedTagNames.filter(t => t !== tagName));
+    } else {
+      setSelectedTagNames([...selectedTagNames, tagName]);
+    }
+  };
+
   const handleStartHarvest = async () => {
     setIsCollecting(true);
     try {
@@ -146,7 +224,10 @@ export default function App() {
         channel_urls: validUrls,
         keyword: subKeyword,
         min_views: minViews,
-        max_duration: maxDuration
+        max_duration: maxDuration,
+        sort_by: sortBy,
+        enable_keyword_cross_search: enableKeywordSearch,
+        selected_tags: selectedTagNames
       });
       setActiveTab('tasks');
       loadTasks();
@@ -294,6 +375,28 @@ export default function App() {
             </div>
           </div>
 
+          {/* Workspace Switcher */}
+          <div className="p-3 border-b border-[#1f242d] bg-[#0c0e12]/60">
+            <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1 flex justify-between items-center">
+              <span>현재 작업대 (Workspace)</span>
+              <button 
+                onClick={() => setShowWsModal(true)}
+                className="text-[#FFE600] hover:underline flex items-center gap-0.5 text-[10px]"
+              >
+                <Plus className="w-3 h-3" /> 새 작업대
+              </button>
+            </div>
+            <select
+              value={currentWs}
+              onChange={(e) => setCurrentWs(e.target.value)}
+              className="w-full bg-[#161a22] border border-[#232731] rounded-lg px-2.5 py-1.5 text-xs text-slate-200 font-medium focus:outline-none focus:border-[#FFE600]"
+            >
+              {workspaces.map((ws) => (
+                <option key={ws.id} value={ws.id}>{ws.name}</option>
+              ))}
+            </select>
+          </div>
+
           {/* Navigation Menu */}
           <nav className="p-3 space-y-1">
             <button
@@ -418,7 +521,7 @@ export default function App() {
         <header className="h-16 bg-[#0f1217]/80 backdrop-blur border-b border-[#1f242d] px-8 flex items-center justify-between sticky top-0 z-20">
           <div className="flex items-center gap-4">
             <h1 className="text-base font-bold text-white flex items-center gap-2">
-              {activeTab === 'dissector' && '🪓 채널 해체 (쇼츠 총알 발굴기)'}
+              {activeTab === 'dissector' && '🪓 채널 해체 (Channel Dissector) · 글로벌 쇼츠 총알 발굴기'}
               {activeTab === 'tasks' && '📊 실시간 수집 및 생성 작업 현황'}
               {activeTab === 'candidates' && '🎯 후보 검수 (총알 창고)'}
               {activeTab === 'onetake' && '⚡ 원테이크 AI 대본 & TTS 제작'}
@@ -451,102 +554,248 @@ export default function App() {
 
         {/* TAB CONTENTS */}
         <div className="p-8 max-w-7xl mx-auto w-full flex-1">
-          {/* 1. 채널 해체 탭 */}
+          {/* 1. 채널 해체 탭 (완전 보강 버전) */}
           {activeTab === 'dissector' && (
             <div className="space-y-6">
-              <div className="glass-panel p-6 rounded-2xl space-y-4">
-                <div className="flex items-center justify-between border-b border-[#232731] pb-4">
-                  <div>
-                    <h2 className="text-lg font-bold text-white">레퍼런스 채널 다중 분석</h2>
-                    <p className="text-xs text-slate-400 mt-0.5">
-                      경쟁 채널 URL을 입력하면 <strong>yt-dlp 엔진</strong>이 쿼터 소모 없이 400만 뷰 이상 바이럴 쇼츠를 일괄 추출합니다.
-                    </p>
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                {/* Left 8 Cols: Channel URLs & Keywords */}
+                <div className="lg:col-span-8 space-y-6">
+                  {/* Channel Inputs */}
+                  <div className="glass-panel p-6 rounded-2xl space-y-4">
+                    <div className="flex items-center justify-between border-b border-[#232731] pb-3">
+                      <div>
+                        <h2 className="text-base font-bold text-white flex items-center gap-2">
+                          <Flame className="w-4 h-4 text-[#FFE600]" />
+                          레퍼런스 채널 해체 (최대 5개)
+                        </h2>
+                        <p className="text-xs text-slate-400 mt-0.5">
+                          채널 쇼츠 탭을 심층 분석하여 400만 뷰 이상 검증된 바이럴 레퍼런스를 추출합니다.
+                        </p>
+                      </div>
+                      <button
+                        onClick={handleAnalyzeChannels}
+                        disabled={isAnalyzingChannel}
+                        className="px-3 py-1.5 rounded-lg bg-[#202734] hover:bg-[#2e3748] text-xs font-semibold text-slate-200 transition-colors"
+                      >
+                        {isAnalyzingChannel ? "채널 프로필 분석 중..." : "채널 빠른 프로필 검증"}
+                      </button>
+                    </div>
+
+                    <div className="space-y-2.5">
+                      {channelUrls.map((url, i) => {
+                        const prof = channelProfiles[url.trim()];
+                        return (
+                          <div key={i} className="space-y-1">
+                            <div className="flex gap-2">
+                              <input
+                                type="text"
+                                value={url}
+                                onChange={(e) => {
+                                  const copy = [...channelUrls];
+                                  copy[i] = e.target.value;
+                                  setChannelUrls(copy);
+                                }}
+                                placeholder="https://www.youtube.com/@ChannelName"
+                                className="flex-1 bg-[#13161c] border border-[#232731] rounded-xl px-4 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-[#FFE600] transition-colors"
+                              />
+                              {channelUrls.length > 1 && (
+                                <button
+                                  onClick={() => setChannelUrls(channelUrls.filter((_, idx) => idx !== i))}
+                                  className="p-2.5 rounded-xl bg-[#1a1f29] hover:bg-rose-950/40 text-slate-400 hover:text-rose-400"
+                                >
+                                  ✕
+                                </button>
+                              )}
+                            </div>
+                            {prof && (
+                              <div className="flex items-center gap-2 px-3 py-1 bg-[#161a22] rounded-lg text-xs text-slate-300">
+                                <img src={prof.avatar_url} alt="" className="w-4 h-4 rounded-full" />
+                                <span className="font-bold text-[#FFE600]">{prof.channel_title}</span>
+                                <span className="text-[11px] text-slate-500">({prof.channel_id})</span>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                      {channelUrls.length < 5 && (
+                        <button
+                          onClick={() => setChannelUrls([...channelUrls, ''])}
+                          className="text-xs text-[#FFE600] font-semibold hover:underline"
+                        >
+                          + 채널 URL 추가 (최대 5개)
+                        </button>
+                      )}
+                    </div>
                   </div>
-                  <span className="text-xs font-mono px-3 py-1 rounded-full bg-[#FFE600]/10 text-[#FFE600] border border-[#FFE600]/20">
-                    Quota-Free Engine
-                  </span>
+
+                  {/* Multi-lingual AI Expansion */}
+                  <div className="glass-panel p-6 rounded-2xl space-y-4">
+                    <div className="flex items-center justify-between border-b border-[#232731] pb-3">
+                      <div>
+                        <h2 className="text-base font-bold text-white flex items-center gap-2">
+                          <Globe className="w-4 h-4 text-[#FFE600]" />
+                          다국어 키워드 자동 확장 & 글로벌 교차 검색
+                        </h2>
+                        <p className="text-xs text-slate-400 mt-0.5">
+                          국내 키워드를 AI가 영어, 일본어, 스페인어 바이럴 해시태그로 실시간 변환하여 해외 쇼츠까지 교차 발굴합니다.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={subKeyword}
+                        onChange={(e) => setSubKeyword(e.target.value)}
+                        placeholder="예: 강아지 레전드, 직장인 공감, 기절 반전"
+                        className="flex-1 bg-[#13161c] border border-[#232731] rounded-xl px-4 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-[#FFE600]"
+                      />
+                      <button
+                        onClick={handleExpandKeywords}
+                        disabled={isExpandingTags}
+                        className="px-5 py-2.5 rounded-xl bg-[#202734] hover:bg-[#FFE600] hover:text-black text-slate-200 font-bold text-xs transition-colors disabled:opacity-50"
+                      >
+                        {isExpandingTags ? "AI 태그 생성 중..." : "AI 글로벌 태그 확장"}
+                      </button>
+                    </div>
+
+                    {/* Expanded Tag Badges */}
+                    {expandedTags.length > 0 && (
+                      <div className="space-y-2 pt-2">
+                        <div className="text-xs font-semibold text-slate-300">
+                          수집에 포함할 글로벌 태그 선택 ({selectedTagNames.length}/{expandedTags.length})
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {expandedTags.map((tagObj, idx) => {
+                            const isSelected = selectedTagNames.includes(tagObj.tag);
+                            return (
+                              <button
+                                key={idx}
+                                onClick={() => toggleTagSelection(tagObj.tag)}
+                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
+                                  isSelected 
+                                    ? 'bg-[#FFE600]/10 border-[#FFE600] text-[#FFE600]' 
+                                    : 'bg-[#13161c] border-[#232731] text-slate-400'
+                                }`}
+                              >
+                                <span className="text-[10px] px-1 py-0.2 bg-[#202734] rounded text-slate-300">{tagObj.lang}</span>
+                                <span>{tagObj.tag}</span>
+                                <span className="opacity-60">{tagObj.hashtag}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
-                <div className="space-y-2">
-                  <label className="text-xs font-semibold text-slate-300">대상 채널 URL (최대 5개)</label>
-                  {channelUrls.map((url, i) => (
-                    <input
-                      key={i}
-                      type="text"
-                      value={url}
-                      onChange={(e) => {
-                        const copy = [...channelUrls];
-                        copy[i] = e.target.value;
-                        setChannelUrls(copy);
-                      }}
-                      placeholder="https://www.youtube.com/@ChannelName"
-                      className="w-full bg-[#13161c] border border-[#232731] rounded-xl px-4 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-[#FFE600] transition-colors"
-                    />
-                  ))}
-                  {channelUrls.length < 5 && (
+                {/* Right 4 Cols: Filter Controls & Launch Trigger */}
+                <div className="lg:col-span-4 space-y-6">
+                  <div className="glass-panel p-6 rounded-2xl space-y-5">
+                    <h3 className="text-sm font-bold text-white flex items-center gap-2 border-b border-[#232731] pb-3">
+                      <Filter className="w-4 h-4 text-[#FFE600]" />
+                      수질 관리 및 수집 필터 조건
+                    </h3>
+
+                    {/* Minimum Views Slider */}
+                    <div>
+                      <div className="flex justify-between text-xs font-semibold text-slate-300">
+                        <span>최소 조회수 필터</span>
+                        <span className="text-[#FFE600] font-mono font-bold">
+                          {(minViews / 10000).toLocaleString()}만 뷰 이상
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={1000000}
+                        max={10000000}
+                        step={500000}
+                        value={minViews}
+                        onChange={(e) => setMinViews(Number(e.target.value))}
+                        className="w-full mt-2 accent-[#FFE600]"
+                      />
+                      <div className="flex justify-between text-[10px] text-slate-500 mt-1">
+                        <span>100만</span>
+                        <span>400만 (표준)</span>
+                        <span>1000만</span>
+                      </div>
+                    </div>
+
+                    {/* Max Duration Slider */}
+                    <div>
+                      <div className="flex justify-between text-xs font-semibold text-slate-300">
+                        <span>영상 최대 길이 제한</span>
+                        <span className="text-[#FFE600] font-mono font-bold">{maxDuration}초 이내</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={15}
+                        max={60}
+                        step={5}
+                        value={maxDuration}
+                        onChange={(e) => setMaxDuration(Number(e.target.value))}
+                        className="w-full mt-2 accent-[#FFE600]"
+                      />
+                      <div className="flex justify-between text-[10px] text-slate-500 mt-1">
+                        <span>15초</span>
+                        <span>40초 (알고리즘 최적)</span>
+                        <span>60초</span>
+                      </div>
+                    </div>
+
+                    {/* Sorting Option */}
+                    <div>
+                      <label className="text-xs font-semibold text-slate-300">정렬 기준</label>
+                      <div className="grid grid-cols-2 gap-2 mt-1.5">
+                        <button
+                          onClick={() => setSortBy('views')}
+                          className={`py-2 rounded-xl text-xs font-bold border transition-all ${
+                            sortBy === 'views' 
+                              ? 'bg-[#FFE600]/10 border-[#FFE600] text-[#FFE600]' 
+                              : 'bg-[#13161c] border-[#232731] text-slate-400'
+                          }`}
+                        >
+                          🔥 조회수 인기순
+                        </button>
+                        <button
+                          onClick={() => setSortBy('recent')}
+                          className={`py-2 rounded-xl text-xs font-bold border transition-all ${
+                            sortBy === 'recent' 
+                              ? 'bg-[#FFE600]/10 border-[#FFE600] text-[#FFE600]' 
+                              : 'bg-[#13161c] border-[#232731] text-slate-400'
+                          }`}
+                        >
+                          ⏱ 최신순
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Cross Search Checkbox */}
+                    <div className="pt-2 border-t border-[#232731]">
+                      <button
+                        onClick={() => setEnableKeywordSearch(!enableKeywordSearch)}
+                        className="flex items-center gap-2 text-xs font-semibold text-slate-300 text-left"
+                      >
+                        {enableKeywordSearch ? (
+                          <CheckSquare className="w-4 h-4 text-[#FFE600] shrink-0" />
+                        ) : (
+                          <Square className="w-4 h-4 text-slate-500 shrink-0" />
+                        )}
+                        <span>다국어 키워드 글로벌 교차 검색 동시 수행</span>
+                      </button>
+                    </div>
+
+                    {/* Big Action Button */}
                     <button
-                      onClick={() => setChannelUrls([...channelUrls, ''])}
-                      className="text-xs text-[#FFE600] font-semibold hover:underline mt-1"
+                      onClick={handleStartHarvest}
+                      disabled={isCollecting}
+                      className="w-full py-4 rounded-xl bg-gradient-to-r from-[#FFE600] to-amber-400 text-black font-black text-sm shadow-xl shadow-amber-400/20 hover:brightness-105 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
                     >
-                      + 채널 추가하기
+                      <Flame className="w-5 h-5 fill-black" />
+                      {isCollecting ? "채널 해체 및 수집 중..." : "쇼츠 총알 발굴 시작 (채널 해체)"}
                     </button>
-                  )}
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
-                  <div>
-                    <label className="text-xs font-semibold text-slate-300">서브 키워드 (다국어 자동확장)</label>
-                    <input
-                      type="text"
-                      value={subKeyword}
-                      onChange={(e) => setSubKeyword(e.target.value)}
-                      placeholder="예: 강아지 레전드, 공감 썰"
-                      className="w-full mt-1.5 bg-[#13161c] border border-[#232731] rounded-xl px-4 py-2 text-sm text-slate-100 focus:outline-none focus:border-[#FFE600]"
-                    />
                   </div>
-
-                  <div>
-                    <label className="text-xs font-semibold text-slate-300 flex justify-between">
-                      <span>최소 조회수 기준</span>
-                      <span className="text-[#FFE600] font-mono">{(minViews / 10000).toLocaleString()}만 뷰</span>
-                    </label>
-                    <input
-                      type="range"
-                      min={1000000}
-                      max={10000000}
-                      step={500000}
-                      value={minViews}
-                      onChange={(e) => setMinViews(Number(e.target.value))}
-                      className="w-full mt-3 accent-[#FFE600]"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="text-xs font-semibold text-slate-300 flex justify-between">
-                      <span>영상 최대 길이 제한</span>
-                      <span className="text-[#FFE600] font-mono">{maxDuration}초 이하</span>
-                    </label>
-                    <input
-                      type="range"
-                      min={15}
-                      max={60}
-                      step={5}
-                      value={maxDuration}
-                      onChange={(e) => setMaxDuration(Number(e.target.value))}
-                      className="w-full mt-3 accent-[#FFE600]"
-                    />
-                  </div>
-                </div>
-
-                <div className="pt-4 flex justify-end">
-                  <button
-                    onClick={handleStartHarvest}
-                    disabled={isCollecting}
-                    className="flex items-center gap-2 px-6 py-3 rounded-xl bg-[#FFE600] text-black font-extrabold text-sm hover:brightness-105 transition-all shadow-lg shadow-[#FFE600]/20 disabled:opacity-50"
-                  >
-                    <Flame className="w-4 h-4 fill-black" />
-                    {isCollecting ? "채널 해체 중..." : "쇼츠 총알 발굴 시작 (채널 해체)"}
-                  </button>
                 </div>
               </div>
             </div>
@@ -688,7 +937,14 @@ export default function App() {
                       </div>
 
                       <div className="p-4 space-y-2">
-                        <div className="text-xs font-semibold text-slate-400">{video.channel_title}</div>
+                        <div className="flex items-center justify-between text-xs text-slate-400 font-semibold">
+                          <span>{video.channel_title}</span>
+                          {video.harvest_source && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#202734] text-[#FFE600] font-mono">
+                              {video.harvest_source}
+                            </span>
+                          )}
+                        </div>
                         <h3 className="text-sm font-bold text-white line-clamp-2 leading-snug">
                           {video.title}
                         </h3>
@@ -1143,6 +1399,36 @@ export default function App() {
           )}
         </div>
       </main>
+
+      {/* NEW WORKSPACE MODAL */}
+      {showWsModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="glass-panel max-w-sm w-full rounded-2xl p-6 space-y-4 border border-[#232731]">
+            <h3 className="text-sm font-bold text-white">새 작업대 (Workspace) 생성</h3>
+            <input
+              type="text"
+              value={newWsName}
+              onChange={(e) => setNewWsName(e.target.value)}
+              placeholder="예: 냥냥이 프로젝트, 헬스 꿀팁"
+              className="w-full bg-[#13161c] border border-[#232731] rounded-xl px-3.5 py-2 text-sm text-slate-100 focus:outline-none focus:border-[#FFE600]"
+            />
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                onClick={() => setShowWsModal(false)}
+                className="px-4 py-2 rounded-xl bg-[#202734] text-xs text-slate-300"
+              >
+                취소
+              </button>
+              <button
+                onClick={handleCreateWorkspace}
+                className="px-4 py-2 rounded-xl bg-[#FFE600] text-xs text-black font-bold"
+              >
+                생성
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* CAPCUT EXPORT MODAL */}
       {showExportModal && selectedVideo && (

@@ -23,7 +23,9 @@ from services.capcut_packager.draft_builder import (
 )
 from services.collector.channel_dissector import (
     extract_channel_shorts,
-    expand_keywords_multilingual
+    expand_keywords_with_llm,
+    analyze_channel_profile,
+    search_shorts_by_keyword
 )
 from services.ai_pipeline.jab_script_generator import generate_jab_script
 from services.tts_engine.edge_tts_runner import (
@@ -35,8 +37,8 @@ from services.multiuse.metadata_packager import generate_multiuse_packages
 
 app = FastAPI(
     title="ShortsHarvester API",
-    version="1.1.0",
-    description="ShortsHarvester backend API for Shorts harvesting, AI script/TTS generation, and CapCut desktop automation."
+    version="1.2.0",
+    description="ShortsHarvester backend API with Enhanced Channel Dissector, Multi-lingual Cross Search, and CapCut Automation."
 )
 
 app.add_middleware(
@@ -54,7 +56,6 @@ os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(EXPORTS_DIR, exist_ok=True)
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
-# Static media route for direct audio playing
 app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
 
 db = {
@@ -73,6 +74,20 @@ class ChannelCollectRequest(BaseModel):
     workspace_id: str
     channel_urls: List[str]
     keyword: Optional[str] = ""
+    min_views: int = 4000000
+    max_duration: int = 40
+    sort_by: Optional[str] = "views" # views or recent
+    enable_keyword_cross_search: Optional[bool] = True
+    selected_tags: Optional[List[str]] = []
+
+class ExpandTagsRequest(BaseModel):
+    keyword: str
+
+class ChannelAnalyzeRequest(BaseModel):
+    channel_url: str
+
+class CreateWorkspaceRequest(BaseModel):
+    name: str
     min_views: int = 4000000
     max_duration: int = 40
 
@@ -103,7 +118,23 @@ class MultiuseRequest(BaseModel):
 
 @app.get("/api/health")
 def healthcheck():
-    return {"status": "ok", "service": "ShortsHarvester API", "version": "1.1.0"}
+    return {"status": "ok", "service": "ShortsHarvester API", "version": "1.2.0"}
+
+# Workspaces
+@app.get("/api/workspaces")
+def get_workspaces():
+    return db["workspaces"]
+
+@app.post("/api/workspaces")
+def create_workspace(req: CreateWorkspaceRequest):
+    ws = {
+        "id": f"ws-{uuid.uuid4().hex[:8]}",
+        "name": req.name,
+        "min_views": req.min_views,
+        "max_duration": req.max_duration
+    }
+    db["workspaces"].append(ws)
+    return ws
 
 @app.get("/api/styles")
 def get_styles():
@@ -113,27 +144,39 @@ def get_styles():
 def get_voices():
     return SUPPORTED_VOICES
 
-# ① 채널 해체 (Channel Dissector)
+# ① 채널 해체 (Channel Dissector Enhanced)
+@app.post("/api/dissector/expand-tags")
+def api_expand_tags(req: ExpandTagsRequest):
+    tags = expand_keywords_with_llm(req.keyword)
+    return {"keyword": req.keyword, "tags": tags}
+
+@app.post("/api/dissector/analyze-channel")
+def api_analyze_channel(req: ChannelAnalyzeRequest):
+    profile = analyze_channel_profile(req.channel_url)
+    return profile
+
 def run_collection_task(task_id: str, req: ChannelCollectRequest):
     db["tasks"][task_id] = {
         "id": task_id,
         "status": "RUNNING",
-        "progress": 10,
-        "message": "채널 분석 및 yt-dlp 메타데이터 수집 시작..."
+        "progress": 5,
+        "message": "채널 해체 및 고속 메타데이터 분석 시작..."
     }
     
     total_found = 0
-    for idx, c_url in enumerate(req.channel_urls):
-        if not c_url.strip():
-            continue
+    valid_channels = [c.strip() for c in req.channel_urls if c.strip()]
+    
+    # 1. Channel Shorts Extraction
+    for idx, c_url in enumerate(valid_channels):
         try:
-            videos = extract_channel_shorts(
-                c_url.strip(),
+            res = extract_channel_shorts(
+                c_url,
                 min_views=req.min_views,
                 max_duration=req.max_duration,
-                limit=25
+                sort_by=req.sort_by or "views",
+                limit=30
             )
-            for v in videos:
+            for v in res.get("items", []):
                 c_id = v["channel_id"]
                 if c_id in db["channel_blacklists"]:
                     continue
@@ -141,6 +184,7 @@ def run_collection_task(task_id: str, req: ChannelCollectRequest):
                 db["collected_videos"][v_id] = {
                     **v,
                     "workspace_id": req.workspace_id,
+                    "harvest_source": "CHANNEL",
                     "status": "UNUSED",
                     "created_at": time.time()
                 }
@@ -148,10 +192,32 @@ def run_collection_task(task_id: str, req: ChannelCollectRequest):
         except Exception:
             pass
         
-        progress = int(10 + (idx + 1) / len(req.channel_urls) * 80)
+        progress = int(5 + (idx + 1) / max(len(valid_channels), 1) * 55)
         db["tasks"][task_id]["progress"] = progress
-        db["tasks"][task_id]["message"] = f"채널 {idx+1}/{len(req.channel_urls)} 처리 중... (누적 발굴: {total_found}개)"
+        db["tasks"][task_id]["message"] = f"채널 해체 중 ({idx+1}/{len(valid_channels)})... 누적 총알 {total_found}개"
 
+    # 2. Multi-lingual Keyword Cross Search
+    if req.enable_keyword_cross_search and (req.keyword or req.selected_tags):
+        db["tasks"][task_id]["message"] = "다국어 키워드 글로벌 교차 검색 진행 중..."
+        tags_to_search = req.selected_tags or [req.keyword]
+        for t_idx, tag in enumerate(tags_to_search[:3]):
+            kw_items = search_shorts_by_keyword(tag, min_views=req.min_views, max_duration=req.max_duration, limit=15)
+            for v in kw_items:
+                if v["channel_id"] in db["channel_blacklists"]:
+                    continue
+                v_id = v["youtube_video_id"]
+                if v_id not in db["collected_videos"]:
+                    db["collected_videos"][v_id] = {
+                        **v,
+                        "workspace_id": req.workspace_id,
+                        "harvest_source": f"KEYWORD:{tag}",
+                        "status": "UNUSED",
+                        "created_at": time.time()
+                    }
+                    total_found += 1
+            db["tasks"][task_id]["progress"] = min(90, 60 + int((t_idx + 1) * 10))
+
+    # Fallback realism
     if total_found == 0 and len(db["collected_videos"]) == 0:
         demo_samples = [
             {
@@ -164,6 +230,7 @@ def run_collection_task(task_id: str, req: ChannelCollectRequest):
                 "thumbnail_url": "https://images.unsplash.com/photo-1552053831-71594a27632d?w=400&q=80",
                 "video_url": "https://www.youtube.com/shorts/demo_dog_01",
                 "workspace_id": req.workspace_id,
+                "harvest_source": "CHANNEL",
                 "status": "UNUSED",
                 "created_at": time.time()
             },
@@ -177,6 +244,7 @@ def run_collection_task(task_id: str, req: ChannelCollectRequest):
                 "thumbnail_url": "https://images.unsplash.com/photo-1514888286974-6c03e2ca1dba?w=400&q=80",
                 "video_url": "https://www.youtube.com/shorts/demo_cat_02",
                 "workspace_id": req.workspace_id,
+                "harvest_source": "CHANNEL",
                 "status": "UNUSED",
                 "created_at": time.time()
             },
@@ -190,6 +258,7 @@ def run_collection_task(task_id: str, req: ChannelCollectRequest):
                 "thumbnail_url": "https://images.unsplash.com/photo-1522071820081-009f0129c71c?w=400&q=80",
                 "video_url": "https://www.youtube.com/shorts/demo_relatable_03",
                 "workspace_id": req.workspace_id,
+                "harvest_source": "KEYWORD",
                 "status": "UNUSED",
                 "created_at": time.time()
             }
@@ -200,7 +269,7 @@ def run_collection_task(task_id: str, req: ChannelCollectRequest):
 
     db["tasks"][task_id]["status"] = "COMPLETED"
     db["tasks"][task_id]["progress"] = 100
-    db["tasks"][task_id]["message"] = f"총 {total_found}개의 고성과 쇼츠 총알 수집이 완료되었습니다!"
+    db["tasks"][task_id]["message"] = f"총 {total_found}개의 바이럴 쇼츠 총알 발굴이 완료되었습니다!"
 
 @app.post("/api/dissector/collect")
 def collect_channel_shorts(req: ChannelCollectRequest, bg_tasks: BackgroundTasks):
@@ -209,7 +278,7 @@ def collect_channel_shorts(req: ChannelCollectRequest, bg_tasks: BackgroundTasks
         "id": task_id,
         "status": "QUEUED",
         "progress": 0,
-        "message": "수집 큐에 등록되었습니다."
+        "message": "채널 해체 및 다국어 수집 큐에 등록되었습니다."
     }
     bg_tasks.add_task(run_collection_task, task_id, req)
     return {"task_id": task_id}
@@ -280,7 +349,6 @@ async def generate_onetake(req: OneTakeRequest):
         voice=req.voice_id
     )
 
-    # Attach public web URLs to audios for direct playback
     for aud in tts_result["audios"]:
         p = Path(aud["file_path"])
         aud["web_url"] = f"/media/{req.video_id}/{p.name}"
@@ -312,11 +380,10 @@ def extract_long_to_shorts(req: LongToShortsRequest):
         target_duration=req.target_duration,
         highlight_count=req.highlight_count
     )
-    # Store into DB for later CapCut export
     db["long_to_shorts"][req.video_url] = result
     return result
 
-# ⑦ 멀티유즈 메타데이터 (YouTube Shorts, IG Reels, TikTok)
+# ⑦ 멀티유즈 메타데이터
 @app.post("/api/multiuse/generate")
 def generate_multiuse(req: MultiuseRequest):
     if req.video_id not in db["collected_videos"]:
@@ -330,7 +397,7 @@ def generate_multiuse(req: MultiuseRequest):
 
     return generate_multiuse_packages(title=title, script_summary=summary)
 
-# ⑧ CapCut 내보내기 (Option A: ZIP & Option B: 로컬 에이전트 번들)
+# ⑧ CapCut 내보내기
 @app.get("/api/export/bundle/{video_id}")
 def get_capcut_bundle(video_id: str):
     if video_id not in db["generated_scripts"]:

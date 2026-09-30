@@ -35,6 +35,34 @@ export const api = {
     return await res.json();
   },
 
+  createWorkspace: async (name, minViews = 4000000, maxDuration = 40) => {
+    const res = await fetch(`${API_BASE}/workspaces`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, min_views: minViews, max_duration: maxDuration })
+    });
+    return await res.json();
+  },
+
+  // 채널 해체 고도화 API
+  expandTags: async (keyword) => {
+    const res = await fetch(`${API_BASE}/dissector/expand-tags`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ keyword })
+    });
+    return await res.json();
+  },
+
+  analyzeChannel: async (channelUrl) => {
+    const res = await fetch(`${API_BASE}/dissector/analyze-channel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ channel_url: channelUrl })
+    });
+    return await res.json();
+  },
+
   collectShorts: async (data) => {
     const res = await fetch(`${API_BASE}/dissector/collect`, {
       method: "POST",
@@ -114,7 +142,6 @@ export const api = {
     return await res.json();
   },
 
-  // ⑥ 롱투숏
   extractLongToShorts: async (videoUrl, targetDuration = 45, highlightCount = 3) => {
     const res = await fetch(`${API_BASE}/long-to-shorts/extract`, {
       method: "POST",
@@ -128,7 +155,6 @@ export const api = {
     return await res.json();
   },
 
-  // ⑦ 멀티유즈 SNS 패키지
   generateMultiuse: async (videoId, selectedTitle = null) => {
     const res = await fetch(`${API_BASE}/multiuse/generate`, {
       method: "POST",
