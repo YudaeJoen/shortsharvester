@@ -1,0 +1,10 @@
+.venv/
+node_modules/
+__pycache__/
+*.pyc
+.env
+media/
+data/
+exports/
+temp_test_media/
+dist/
