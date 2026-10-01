@@ -3,6 +3,12 @@ import sys
 import json
 import shutil
 import subprocess
+
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w")
+
 import uvicorn
 from pathlib import Path
 from typing import Dict, Any, Optional
